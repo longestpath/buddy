@@ -1,3 +1,17 @@
+> **Fork notice** — this is a sandboxed fork of [`fiorastudio/buddy`](https://github.com/fiorastudio/buddy). The MCP server and all gameplay features are unchanged from upstream; the fork adds a reduced-trust deployment path so the companion can be run without granting it host-level privileges.
+>
+> **What this fork adds**
+> - **`Dockerfile` + [`run-sandboxed.sh`](run-sandboxed.sh)** — runs the MCP server inside a container with `--network=none`, read-only rootfs, non-root user, all Linux capabilities dropped, and only two bind mounts: `~/.buddy/` for the SQLite DB and the single file `~/.claude/buddy-status.json` for the statusline animation. Nothing else from `~/.claude/` is exposed to the container; `~/.claude.json` (OAuth tokens) is never mounted.
+> - **[`install-sandboxed.sh`](install-sandboxed.sh)** — a narrower installer. Does **not** register the `PostToolUse` hook, does **not** inject a buddy block into `CLAUDE.md` / `AGENTS.md` / Cursor / Codex / Gemini / Copilot prompt files, and does **not** write directly to `~/.claude.json`. Only the `statusLine` key in `~/.claude/settings.json` is patched (idempotent, backed up on replacement). MCP registration is delegated to the official `claude mcp add` command behind an opt-in `--register` flag.
+>
+> **Install (fork path):** `bash install-sandboxed.sh --register` — builds the image, extracts `dist/` for the host statusline wrapper, patches `statusLine`, and registers the MCP server pointing at `run-sandboxed.sh`.
+>
+> **Tracking upstream.** `master` tracks `fiorastudio/buddy:master`; no gameplay or protocol divergence is intended. The `upstream` remote is preserved for pulling updates.
+>
+> The upstream README follows.
+>
+> ---
+
 # Buddy: The /buddy Rescue Mission for Your AI Terminal
 
 <div align="center">
