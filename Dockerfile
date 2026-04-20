@@ -64,6 +64,11 @@ RUN addgroup -S buddy \
  && adduser -S -G buddy -h /home/buddy buddy \
  && install -d -o buddy -g buddy /home/buddy/.buddy
 
+# Pull in bun for rollWithCCCompat (Claude-Code-compat wyhash). Without it,
+# rescued buddies fall back to FNV-1a and their stats drift from the originals.
+# Static binary, no new dynamic deps.
+COPY --from=oven/bun:alpine /usr/local/bin/bun /usr/local/bin/bun
+
 WORKDIR /app
 COPY --from=server-builder --chown=buddy:buddy /src/node_modules ./node_modules
 COPY --from=server-builder --chown=buddy:buddy /src/dist         ./dist
