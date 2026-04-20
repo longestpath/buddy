@@ -1,6 +1,6 @@
 import { execFileSync } from "child_process";
-import { readFileSync, readdirSync, writeFileSync } from "fs";
-import { join } from "path";
+import { readFileSync, readdirSync, writeFileSync, realpathSync, lstatSync } from "fs";
+import { join, sep } from "path";
 import { homedir } from "os";
 import { SPECIES_ANIMATIONS, SPRITE_BODIES, renderSprite } from "./lib/species.js";
 import { HAT_LINES, RARITY_ANSI, type Hat } from "./lib/types.js";
@@ -20,12 +20,18 @@ try {
   stdinData = readFileSync(0, "utf-8");
 } catch { /* no stdin */ }
 
-// Run claude-hud with caching (HUD data changes slowly, no need to re-run every render)
+// claude-hud plugin integration is opt-in. When enabled, this wrapper
+// execs `bun` on a TS file inside ~/.claude/plugins/cache/claude-hud/ every
+// statusline tick (~2s), on the host, unsandboxed. That's a host-side
+// code-execution surface independent of the MCP container, so we require
+// explicit opt-in via BUDDY_ENABLE_HUD=1 and validate the entry path against
+// symlink-escape before handing it to bun.
 const HUD_CACHE_PATH = join(homedir(), ".claude", "hud-cache.json");
 const HUD_CACHE_TTL = 10_000; // 10 seconds
+const HUD_ENABLED = process.env.BUDDY_ENABLE_HUD === '1';
 
 let hudLines: string[] = [];
-try {
+if (HUD_ENABLED) try {
   // Try cache first
   let cacheHit = false;
   try {
@@ -56,15 +62,38 @@ try {
     } catch { /* no claude-hud installed */ }
 
     if (pluginDir) {
-      const bunPath = process.env.BUN_PATH || 'bun';
-      const entryPoint = toUnix(join(pluginDir, "src", "index.ts"));
-      const result = execFileSync(bunPath, ["--env-file", "/dev/null", entryPoint], {
-        input: stdinData, timeout: 5000, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
-      });
-      if (result) {
-        hudLines = result.trimEnd().split("\n");
-        // Write cache
-        try { writeFileSync(HUD_CACHE_PATH, JSON.stringify({ ts: Date.now(), lines: hudLines })); } catch { /* non-fatal */ }
+      // Path validation: the entry must live under the realpath'd cache
+      // root, must not itself be a symlink, and must be a regular file.
+      // Anything else refuses to exec — prevents an attacker who can plant
+      // a symlink inside the plugin cache from escaping bun to an arbitrary
+      // script path.
+      let safeEntry: string | null = null;
+      try {
+        const entryRaw = join(pluginDir, "src", "index.ts");
+        if (!lstatSync(entryRaw).isFile()) throw new Error("entry is not a regular file");
+        const entryReal = realpathSync(entryRaw);
+        const cacheReal = realpathSync(cacheDir);
+        const cacheRealPrefix = cacheReal.endsWith(sep) ? cacheReal : cacheReal + sep;
+        if (!entryReal.startsWith(cacheRealPrefix)) {
+          throw new Error(`entry ${entryReal} outside cache ${cacheReal}`);
+        }
+        safeEntry = entryReal;
+      } catch (e) {
+        if (process.env.BUDDY_DEBUG) {
+          process.stderr.write(`buddy: hud entry rejected: ${(e as Error).message}\n`);
+        }
+      }
+
+      if (safeEntry) {
+        const bunPath = process.env.BUN_PATH || 'bun';
+        const result = execFileSync(bunPath, ["--env-file", "/dev/null", toUnix(safeEntry)], {
+          input: stdinData, timeout: 5000, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
+        });
+        if (result) {
+          hudLines = result.trimEnd().split("\n");
+          // Write cache
+          try { writeFileSync(HUD_CACHE_PATH, JSON.stringify({ ts: Date.now(), lines: hudLines })); } catch { /* non-fatal */ }
+        }
       }
     }
   }

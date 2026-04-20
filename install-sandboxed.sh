@@ -2,21 +2,30 @@
 # Buddy MCP — sandboxed installer (strictly narrower than upstream install.sh).
 #
 # Does:
-#   1. Build the Docker image (skip if already present).
-#   2. Extract dist/ from the image into the repo for the host-side statusline wrapper.
-#   3. Patch ~/.claude/settings.json to point statusLine at the wrapper (backup saved).
+#   1. Build two Docker targets (skip if already present):
+#        - buddy-mcp-statusline (scripts-off, produces trustworthy dist/)
+#        - buddy-mcp            (runtime, scripts-on for native modules)
+#   2. Extract dist/ from the statusline stage into the repo. The host-side
+#      statusline wrapper is run unsandboxed by Claude Code every ~2s, so
+#      its source must NOT include anything touched by transitive npm
+#      postinstall scripts. That's why extraction comes from the
+#      scripts-off stage, not from the runtime image.
+#   3. Patch ~/.claude/settings.json to point statusLine at the wrapper
+#      (idempotent; backs up prior file on replacement; refuses to clobber
+#      malformed JSON).
 #   4. With --register: run `claude mcp add buddy -s user -- run-sandboxed.sh`.
 #
 # Does NOT touch:
 #   - ~/.claude.json (unless --register, via the official claude CLI)
 #   - ~/.claude/CLAUDE.md, ~/.cursor/rules, ~/.codex, ~/.gemini, ~/.copilot  (no prompt injection)
 #   - settings.json PostToolUse hooks (no post-Bash hook)
-#   - any network (the container runs offline)
+#   - any network at server runtime (the container runs offline)
 
 set -euo pipefail
 
 REPO="${REPO:-$(cd "$(dirname "$0")" && pwd)}"
 IMAGE="${IMAGE:-buddy-mcp}"
+STATUSLINE_IMAGE="${STATUSLINE_IMAGE:-buddy-mcp-statusline}"
 SETTINGS="$HOME/.claude/settings.json"
 REGISTER=0
 SKIP_BUILD=0
@@ -26,7 +35,7 @@ for arg in "$@"; do
     --register)   REGISTER=1 ;;
     --skip-build) SKIP_BUILD=1 ;;
     -h|--help)
-      sed -n '2,17p' "$0"
+      sed -n '2,22p' "$0"
       echo
       echo "Usage: install-sandboxed.sh [--register] [--skip-build]"
       exit 0
@@ -39,20 +48,32 @@ need() { command -v "$1" >/dev/null || { echo "missing: $1" >&2; exit 1; }; }
 need docker
 need node
 
-# 1. Build image if missing
-if [ "$SKIP_BUILD" -eq 0 ] && ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
-  echo "  building $IMAGE..."
-  docker build -t "$IMAGE" "$REPO"
+# 1. Build images if missing
+if [ "$SKIP_BUILD" -eq 0 ]; then
+  if ! docker image inspect "$STATUSLINE_IMAGE" >/dev/null 2>&1; then
+    echo "  building $STATUSLINE_IMAGE (scripts-off, for host-side statusline)..."
+    docker build --target statusline-builder -t "$STATUSLINE_IMAGE" "$REPO"
+  else
+    echo "  image $STATUSLINE_IMAGE: present"
+  fi
+  if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+    echo "  building $IMAGE (runtime)..."
+    docker build -t "$IMAGE" "$REPO"
+  else
+    echo "  image $IMAGE: present"
+  fi
 else
-  echo "  image $IMAGE: present"
+  echo "  skipping docker build (--skip-build)"
 fi
 
-# 2. Extract dist/ from image into the repo
-echo "  extracting dist/ from $IMAGE..."
-CID=$(docker create "$IMAGE")
+# 2. Extract dist/ from the scripts-off statusline image.
+#    Anything copied here runs on the host every ~2s under Claude Code's
+#    statusline refresh — so the provenance of this dist/ is load-bearing.
+echo "  extracting dist/ from $STATUSLINE_IMAGE..."
+CID=$(docker create "$STATUSLINE_IMAGE")
 trap 'docker rm -f "$CID" >/dev/null 2>&1 || true' EXIT
 rm -rf "$REPO/dist"
-docker cp "$CID:/app/dist" "$REPO/dist" >/dev/null
+docker cp "$CID:/src/dist" "$REPO/dist" >/dev/null
 docker rm "$CID" >/dev/null
 trap - EXIT
 
@@ -71,8 +92,16 @@ RESULT=$(SETTINGS_FILE="$SETTINGS" DESIRED_JSON="$DESIRED_JSON" node <<'EOJS'
 const fs = require('fs');
 const path = process.env.SETTINGS_FILE;
 const desired = JSON.parse(process.env.DESIRED_JSON);
+const raw = fs.readFileSync(path, 'utf-8');
 let cfg;
-try { cfg = JSON.parse(fs.readFileSync(path, 'utf-8')); } catch { cfg = {}; }
+try {
+  cfg = JSON.parse(raw);
+} catch (e) {
+  // Refuse to clobber. Emitting "invalid" tells the shell caller to stop.
+  process.stderr.write(`settings.json is not valid JSON: ${e.message}\n`);
+  process.stdout.write('invalid');
+  process.exit(0);
+}
 const prev = cfg.statusLine;
 const same = prev && JSON.stringify(prev) === JSON.stringify(desired);
 if (same) { process.stdout.write('noop'); process.exit(0); }
@@ -83,6 +112,12 @@ EOJS
 )
 
 case "$RESULT" in
+  invalid)
+    # We haven't modified the target — discard the backup we took preemptively.
+    rm -f "$BACKUP"
+    echo "  settings.json is malformed. Fix or delete it, then re-run." >&2
+    exit 3
+    ;;
   noop)
     rm -f "$BACKUP"
     echo "  statusLine: already correct (no changes, backup discarded)"
@@ -95,6 +130,16 @@ case "$RESULT" in
     echo "  statusLine: replaced (previous contents backed up to $BACKUP)"
     ;;
 esac
+
+# Prune old settings.json backups — keep the most recent 5.
+# Using a glob-safe listing that tolerates no matches.
+backups=("$SETTINGS".bak.*)
+if [ -e "${backups[0]}" ]; then
+  # shellcheck disable=SC2012 # ls -t is fine here; filenames are timestamped
+  ls -1t "$SETTINGS".bak.* 2>/dev/null | tail -n +6 | while IFS= read -r old; do
+    rm -f -- "$old"
+  done
+fi
 
 # 4. Optional MCP registration
 if [ "$REGISTER" -eq 1 ]; then

@@ -6,6 +6,7 @@ CLAUDE.md
 SIMPLIFY-REPORT.md
 TODO.md
 STATUS.md
+.scratch/
 
 # Demo recording/rendering scripts (keep GIFs + screenshots, ignore tooling)
 demo/*.mjs
