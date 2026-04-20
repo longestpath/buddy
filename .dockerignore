@@ -1,0 +1,16 @@
+.git
+.gitignore
+.dockerignore
+Dockerfile
+node_modules
+dist
+demo
+*.md
+install.sh
+install.ps1
+uninstall.sh
+uninstall.ps1
+vitest.config.ts
+LICENSE
+*.db
+.env
