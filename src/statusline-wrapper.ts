@@ -176,13 +176,19 @@ try {
       }
 
       // --- Shared info lines (used by both bubble and normal modes) ---
+      // Compact mode drops species, rarity stars, and the reaction-text
+      // trailer so the sprite + info fit within narrow panes. The bubble
+      // already shows reaction text, so suppressing the trailer costs nothing.
+      const compact = process.env.BUDDY_COMPACT === '1';
       const shinyTag = buddy.is_shiny ? " ✨" : "";
       const rarityColor = buddy.rarity ? (RARITY_ANSI[buddy.rarity as keyof typeof RARITY_ANSI] || DIM) : DIM;
       const stars = buddy.rarity_stars || '';
       const nameIndicator = reactionIndicator ? `${YELLOW}${reactionIndicator}${RESET}` : '';
-      const nameInfo = `${CYAN}${buddy.name}${nameIndicator}${RESET} ${DIM}(${buddy.species})${RESET} ${YELLOW}Lv.${buddy.level}${shinyTag}${RESET}`;
-      const reactionSuffix = reactionText ? `  ${DIM}"${reactionText}"${RESET}` : '';
-      const moodInfo = `${moodColor(buddy.mood)}${buddy.mood}${RESET} ${DIM}XP:${RESET}${buddy.xp} ${rarityColor}${stars}${RESET}${reactionSuffix}`;
+      const speciesTag = compact ? '' : ` ${DIM}(${buddy.species})${RESET}`;
+      const nameInfo = `${CYAN}${buddy.name}${nameIndicator}${RESET}${speciesTag} ${YELLOW}Lv.${buddy.level}${shinyTag}${RESET}`;
+      const reactionSuffix = (!compact && reactionText) ? `  ${DIM}"${reactionText}"${RESET}` : '';
+      const starsPart = compact ? '' : ` ${rarityColor}${stars}${RESET}`;
+      const moodInfo = `${moodColor(buddy.mood)}${buddy.mood}${RESET} ${DIM}XP:${RESET}${buddy.xp}${starsPart}${reactionSuffix}`;
 
       // --- Speech bubble mode: show full bubble when active ---
       if (buddy.bubble_lines && Array.isArray(buddy.bubble_lines) && hasReactionActive) {
@@ -212,7 +218,18 @@ try {
             buddyRight.push(`${DIM}${isFading ? DIM : ''}${line}${RESET}`);
           }
         }
-        const indent = ' '.repeat(Math.min(bubbleWidth + 4, 38));
+        // Cap indent by terminal width so nameInfo/moodInfo don't wrap in
+        // narrow panes. stdout.columns is unset when piped (e.g. buddy-pane.sh
+        // uses `| sed`), so fall back to $COLUMNS, then 80.
+        const termCols = process.stdout.columns
+          || parseInt(process.env.COLUMNS || '', 10)
+          || 80;
+        const infoWidth = Math.max(
+          stripAnsi(nameInfo).length,
+          stripAnsi(moodInfo).length,
+        );
+        const maxIndent = Math.max(0, termCols - infoWidth);
+        const indent = ' '.repeat(Math.min(bubbleWidth + 4, 38, maxIndent));
         buddyRight.push(`${indent}${nameInfo}`);
         buddyRight.push(`${indent}${moodInfo}`);
       } else {
@@ -303,7 +320,7 @@ try {
         const AMBIENT_DWELL_MS = 20_000;
         const ambientBucket = String(Math.floor(Date.now() / AMBIENT_DWELL_MS));
         const ambientIdx = seededIndex(buddy.species + ':' + (buddy.mood || 'idle'), ambientBucket, ambientPool.length);
-        const ambientText = hasReactionActive ? '' : `${DIM}${ambientPool[ambientIdx]}${RESET}`;
+        const ambientText = (hasReactionActive || compact) ? '' : `${DIM}${ambientPool[ambientIdx]}${RESET}`;
 
         const artWidth = Math.max(...asciiLines.map((l: string) => l.length));
         for (let i = 0; i < asciiLines.length; i++) {
@@ -322,6 +339,34 @@ try {
     }
   }
 } catch { /* no buddy status file */ }
+
+// Optional: right-anchor the buddy block to the terminal's right edge.
+// When BUDDY_RIGHT_ALIGN=1, both idle and bubble frames end at the same
+// column, so the sprite doesn't visually jump left/right when a bubble
+// appears or expires. Opt-in because the Claude Code statusline is a
+// narrow strip where right-align is undesirable; persistent panes
+// (buddy-pane.sh) are the intended user.
+if (process.env.BUDDY_RIGHT_ALIGN === '1' && buddyRight.length > 0) {
+  const termCols = process.stdout.columns
+    || parseInt(process.env.COLUMNS || '', 10)
+    || 80;
+  const groupWidth = Math.max(
+    ...buddyRight.map((l) => stripAnsi(l).length),
+    0,
+  );
+  // The HUD-merge logic below unconditionally prepends `maxHudWidth + gutter`
+  // spaces to each buddy line. When HUD is empty (the buddy-pane.sh case),
+  // that's a fixed 3-space gutter — subtract it here so our right-align
+  // prefix + that gutter + content lands exactly at termCols, not past it.
+  const trailingGutter = hudLines.length === 0 ? 3 : 0;
+  const pad = Math.max(0, termCols - groupWidth - trailingGutter);
+  if (pad > 0) {
+    const prefix = ' '.repeat(pad);
+    for (let i = 0; i < buddyRight.length; i++) {
+      buddyRight[i] = prefix + buddyRight[i];
+    }
+  }
+}
 
 // Merge: HUD lines on the left, buddy on the right (side-by-side)
 if (hudLines.length === 0 && buddyRight.length === 0) {
