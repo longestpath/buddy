@@ -5,11 +5,11 @@
 # which every `buddy_*` MCP tool call writes to. No statusline required.
 #
 # Usage:
-#   ./buddy-pane.sh              # default 2s refresh, right-aligned, compact
+#   ./buddy-pane.sh              # default 2s refresh, right-aligned
 #   ./buddy-pane.sh 1            # 1s refresh
 #   BUDDY_PANE_TOP=4 ./buddy-pane.sh   # 4 blank rows above the sprite
 #   BUDDY_RIGHT_ALIGN=0 ./buddy-pane.sh  # disable right-align (default: on)
-#   BUDDY_COMPACT=0 ./buddy-pane.sh      # show full info (species, stars, ambient)
+#   BUDDY_COMPACT=1 ./buddy-pane.sh      # drop species/stars/ambient (for ultra-narrow panes)
 #   BUDDY_PANE_WIDTH=45 ./buddy-pane.sh   # override when tput misreports pane width
 #   BUDDY_ENABLE_HUD=1 ./buddy-pane.sh
 
@@ -31,10 +31,10 @@ esac
 export BUDDY_RIGHT_ALIGN
 
 # Compact mode: drops species annotation, rarity stars, ambient activity text,
-# and reaction-text trailer (all redundant or low-signal) so the info fits in
-# narrow panes. Default on for the pane (narrow is the whole point). Disable
-# in wide panes with BUDDY_COMPACT=0.
-: "${BUDDY_COMPACT:=1}"
+# and reaction-text trailer so the info fits in very narrow panes. With the
+# terminal-width-aware indent cap and BUDDY_PANE_WIDTH override, full info
+# usually fits; enable compact explicitly for panes narrower than ~40 cols.
+: "${BUDDY_COMPACT:=0}"
 export BUDDY_COMPACT
 
 if [ ! -f "$WRAPPER" ]; then
