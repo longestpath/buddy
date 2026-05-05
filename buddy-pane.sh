@@ -11,6 +11,7 @@
 #   BUDDY_RIGHT_ALIGN=0 ./buddy-pane.sh  # disable right-align (default: on)
 #   BUDDY_COMPACT=1 ./buddy-pane.sh      # drop species/stars/ambient (for ultra-narrow panes)
 #   BUDDY_PANE_WIDTH=45 ./buddy-pane.sh   # override when tput misreports pane width
+#   BUDDY_PANE_CLEAR_EVERY=30 ./buddy-pane.sh  # full-clear every N ticks (0 disables)
 #   BUDDY_ENABLE_HUD=1 ./buddy-pane.sh
 
 set -u
@@ -37,6 +38,14 @@ export BUDDY_RIGHT_ALIGN
 : "${BUDDY_COMPACT:=0}"
 export BUDDY_COMPACT
 
+# Periodic full-clear interval, in ticks. Catches cumulative debris from pane
+# resize (laptop docking) or wide-character overdraw that the per-line \e[K
+# misses. 30 ticks * 2s = ~once a minute. Set to 0 to disable.
+: "${BUDDY_PANE_CLEAR_EVERY:=30}"
+case "$BUDDY_PANE_CLEAR_EVERY" in
+  ''|*[!0-9]*) echo "buddy-pane: BUDDY_PANE_CLEAR_EVERY must be a non-negative integer" >&2; exit 1 ;;
+esac
+
 if [ ! -f "$WRAPPER" ]; then
   echo "buddy-pane: wrapper not found at $WRAPPER" >&2
   echo "  run: (cd \"$REPO\" && npm run build)" >&2
@@ -58,6 +67,7 @@ trap cleanup INT TERM HUP EXIT
 printf '\033[?25l'
 tput clear 2>/dev/null || clear
 
+TICK=0
 while :; do
   # Re-measure each tick so the wrapper adapts if the pane is resized.
   # When stdout is piped (through sed below), node's process.stdout.columns
@@ -77,6 +87,16 @@ while :; do
     [ "$COLS" -lt 20 ] && COLS=20
   fi
 
+  # Periodic full-clear every Nth tick. Per-line \e[K + \e[J below catches
+  # the common case, but pane resize (laptop dock/undock) and wide-character
+  # overdraw can leave debris in rows we never re-render. ~once a minute at
+  # default settings is enough to mop up without visible flicker.
+  if [ "$BUDDY_PANE_CLEAR_EVERY" -gt 0 ] \
+     && [ "$TICK" -ne 0 ] \
+     && [ $((TICK % BUDDY_PANE_CLEAR_EVERY)) -eq 0 ]; then
+    tput clear 2>/dev/null || printf '\033[2J\033[H'
+  fi
+
   # Home the cursor instead of full-clear to avoid flicker, then move down
   # TOP_PADDING rows so the sprite sits lower in the pane. The top rows were
   # blanked by the initial clear and stay untouched.
@@ -90,4 +110,5 @@ while :; do
   # *below* where the new frame ends.
   printf '\033[J'
   sleep "$INTERVAL"
+  TICK=$((TICK + 1))
 done
