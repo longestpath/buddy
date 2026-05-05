@@ -40,8 +40,8 @@ export BUDDY_COMPACT
 
 # Periodic full-clear interval, in ticks. Catches cumulative debris from pane
 # resize (laptop docking) or wide-character overdraw that the per-line \e[K
-# misses. 30 ticks * 2s = ~once a minute. Set to 0 to disable.
-: "${BUDDY_PANE_CLEAR_EVERY:=30}"
+# misses. 15 ticks * 2s = ~once every 30s. Set to 0 to disable.
+: "${BUDDY_PANE_CLEAR_EVERY:=15}"
 case "$BUDDY_PANE_CLEAR_EVERY" in
   ''|*[!0-9]*) echo "buddy-pane: BUDDY_PANE_CLEAR_EVERY must be a non-negative integer" >&2; exit 1 ;;
 esac
