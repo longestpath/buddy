@@ -10,9 +10,11 @@
 #      its source must NOT include anything touched by transitive npm
 #      postinstall scripts. That's why extraction comes from the
 #      scripts-off stage, not from the runtime image.
-#   3. Patch ~/.claude/settings.json to point statusLine at the wrapper
+#   3. With --statusline: patch ~/.claude/settings.json so the buddy renders
+#      in the Claude Code statusline. Opt-in because buddy-pane.sh exists for
+#      users who prefer a dedicated pane and don't want the statusline cluttered.
 #      (idempotent; backs up prior file on replacement; refuses to clobber
-#      malformed JSON).
+#      malformed JSON.)
 #   4. With --register: run `claude mcp add buddy -s user -- run-sandboxed.sh`,
 #      and (unless --no-inject-prompt) append the buddy-companion sentinel
 #      block to ~/.claude/CLAUDE.md so agents know to call buddy_observe.
@@ -33,16 +35,18 @@ SETTINGS="$HOME/.claude/settings.json"
 REGISTER=0
 SKIP_BUILD=0
 INJECT_PROMPT=1
+PATCH_STATUSLINE=0
 
 for arg in "$@"; do
   case "$arg" in
     --register)         REGISTER=1 ;;
     --skip-build)       SKIP_BUILD=1 ;;
     --no-inject-prompt) INJECT_PROMPT=0 ;;
+    --statusline)       PATCH_STATUSLINE=1 ;;
     -h|--help)
-      sed -n '2,25p' "$0"
+      sed -n '2,26p' "$0"
       echo
-      echo "Usage: install-sandboxed.sh [--register] [--skip-build] [--no-inject-prompt]"
+      echo "Usage: install-sandboxed.sh [--register] [--skip-build] [--no-inject-prompt] [--statusline]"
       exit 0
       ;;
     *) echo "unknown flag: $arg" >&2; exit 2 ;;
@@ -81,6 +85,10 @@ rm -rf "$REPO/dist"
 docker cp "$CID:/src/dist" "$REPO/dist" >/dev/null
 docker rm "$CID" >/dev/null
 trap - EXIT
+
+if [ "$PATCH_STATUSLINE" -eq 0 ]; then
+  echo "  statusLine: skipped (run with --statusline to patch; see buddy-pane.sh for a dedicated pane instead)"
+else
 
 STATUSLINE_CMD="node $REPO/dist/statusline-wrapper.js"
 DESIRED_JSON="$(printf '{"type":"command","command":%s,"padding":1,"refreshInterval":2}' \
@@ -136,6 +144,8 @@ case "$RESULT" in
     ;;
 esac
 
+fi  # --statusline guard
+
 # Prune old settings.json backups — keep the most recent 5.
 # Using a glob-safe listing that tolerates no matches.
 backups=("$SETTINGS".bak.*)
@@ -190,4 +200,8 @@ EOF
 fi
 
 echo
-echo "done. restart Claude Code to pick up the statusline."
+if [ "$PATCH_STATUSLINE" -eq 1 ]; then
+  echo "done. restart Claude Code to pick up the statusline."
+else
+  echo "done. restart Claude Code sessions to load the new MCP server. (Run buddy-pane.sh in a dedicated pane to display the buddy.)"
+fi
