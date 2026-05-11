@@ -107,8 +107,29 @@ try {
   if (buddy && buddy.name) {
     let ascii: string = "";
 
+    // Dream-loop playback takes precedence: if an animation is actively playing,
+    // its pre-rendered frames replace the normal sprite. Eye substitution + reaction
+    // overlays are also skipped — the frames are already final.
+    let playbackActive = false;
+    if (
+      buddy.playback &&
+      Array.isArray(buddy.playback.frames) &&
+      buddy.playback.frames.length > 0 &&
+      typeof buddy.playback.started_at === 'number' &&
+      typeof buddy.playback.duration_ms === 'number'
+    ) {
+      const elapsed = Date.now() - buddy.playback.started_at;
+      if (elapsed >= 0 && elapsed < buddy.playback.duration_ms) {
+        const frames: string[] = buddy.playback.frames;
+        const frameMs = buddy.playback.duration_ms / frames.length;
+        const idx = Math.min(frames.length - 1, Math.floor(elapsed / frameMs));
+        ascii = frames[idx];
+        playbackActive = true;
+      }
+    }
+
     // Try to use new sprite format if eye data is available
-    if (buddy.eye && SPRITE_BODIES[buddy.species]) {
+    if (!playbackActive && buddy.eye && SPRITE_BODIES[buddy.species]) {
       // Force hat: 'none' in statusline — hat adds an extra line that spills past the HUD.
       // Hats are shown in the card display instead.
       const bones = { species: buddy.species, eye: buddy.eye, hat: 'none', rarity: buddy.rarity || 'common', shiny: buddy.is_shiny || false, stats: buddy.stats || {} } as any;
@@ -152,7 +173,9 @@ try {
       // Hat rendering skipped in statusline — adds extra line that spills past HUD.
       // Hats are visible in the card display (/buddy status).
 
-      // Apply reaction state (eye override + indicator) if active and not expired
+      // Apply reaction state (eye override + indicator) if active and not expired.
+      // Playback frames are already final, so we skip the eye-replacement step
+      // but still surface reaction_text / reaction_indicator in info lines below.
       let reactionIndicator = '';
       let reactionText = '';
       const hasReactionActive = buddy.reaction_expires && Date.now() < buddy.reaction_expires;
@@ -160,7 +183,7 @@ try {
         const reactionEye = buddy.reaction_eye || '';
         reactionIndicator = buddy.reaction_indicator || '';
 
-        if (reactionEye) {
+        if (reactionEye && !playbackActive) {
           asciiLines = asciiLines.map((line: string) => {
             // Replace the buddy's normal eye with reaction eye
             if (buddy.eye && line.includes(buddy.eye)) {

@@ -66,6 +66,21 @@ export function initDb() {
       context_summary TEXT,
       FOREIGN KEY(companion_id) REFERENCES companions(id)
     );
+
+    CREATE TABLE IF NOT EXISTS species_animations (
+      id TEXT PRIMARY KEY,
+      species TEXT NOT NULL,
+      frames TEXT NOT NULL,
+      text TEXT DEFAULT '',
+      duration_ms INTEGER NOT NULL,
+      score INTEGER DEFAULT 5,
+      brief TEXT DEFAULT '',
+      source TEXT DEFAULT 'dreamed',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_species_animations_species
+      ON species_animations(species);
   `);
 
   // Migration: add observer_mode column (safe for existing DBs)

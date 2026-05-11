@@ -59,7 +59,18 @@ export function loadCompanion(row: any, userIdOverride?: string): Companion | nu
 /**
  * Write buddy status JSON for the statusline wrapper.
  */
-export function writeBuddyStatus(companion: Companion, reaction?: { state: string; text: string; expires: number; eyeOverride?: string; indicator?: string; bubbleLines?: string[]; petActiveUntil?: number }) {
+export type PlaybackState = {
+  entry_id: string;
+  frames: string[];
+  started_at: number;
+  duration_ms: number;
+};
+
+export function writeBuddyStatus(
+  companion: Companion,
+  reaction?: { state: string; text: string; expires: number; eyeOverride?: string; indicator?: string; bubbleLines?: string[]; petActiveUntil?: number },
+  playback?: PlaybackState,
+) {
   try {
     if (!statusDirEnsured) {
       mkdirSync(dirname(BUDDY_STATUS_PATH), { recursive: true });
@@ -87,6 +98,7 @@ export function writeBuddyStatus(companion: Companion, reaction?: { state: strin
         ...(reaction.bubbleLines ? { bubble_lines: reaction.bubbleLines } : {}),
         ...(reaction.petActiveUntil ? { pet_active_until: reaction.petActiveUntil } : {}),
       } : {}),
+      ...(playback ? { playback } : {}),
     }));
   } catch { /* non-fatal */ }
 }

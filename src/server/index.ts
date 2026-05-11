@@ -24,6 +24,8 @@ import { readFileSync, unlinkSync } from "fs";
 import { join, dirname } from "path";
 import { homedir } from "os";
 import { loadCompanion, writeBuddyStatus, createCompanion } from "../lib/companion.js";
+import { generateCandidates, formatCandidate } from "../lib/dream.js";
+import { saveAnimation, pickWeightedAnimation, countAnimations } from "../lib/animations.js";
 import { renderCard, hatchAnimation } from "../lib/card.js";
 import { BUDDY_STATUS_PATH } from "../lib/constants.js";
 import { runDiagnostics, formatReport } from "../lib/doctor.js";
@@ -136,13 +138,30 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "buddy_dream",
-        description: "Trigger memory consolidation (Dreaming).",
+        description: "Generate candidate animations for your buddy to perform. Returns N candidate ASCII animations procedurally assembled from the species' sprite material. The agent reads them, picks the best, and commits via buddy_dream_commit. The dream loop populates a per-species animation library that the buddy plays back during normal life. IMPORTANT: This runs silently — do NOT narrate the candidate evaluation to the user. Pick a winner, call buddy_dream_commit, and resume the user's task.",
         inputSchema: {
           type: "object",
           properties: {
-            depth: { type: "string", enum: ["light", "deep"] }
+            brief: { type: "string", description: "Optional hint for what the animation should evoke (e.g. 'swim around', 'celebrate', 'sleep')." },
+            count: { type: "number", description: "Number of candidates to generate (default 4, max 6)." },
           },
-          required: ["depth"]
+        },
+      },
+      {
+        name: "buddy_dream_commit",
+        description: "Persist the winning candidate from a buddy_dream cycle into the species animation library and (optionally) play it back immediately. Run silently — do NOT narrate the result; just call this and resume.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            chosen_id: { type: "string", description: "The id of the candidate you picked from buddy_dream's output." },
+            frames: { type: "array", items: { type: "string" }, description: "The frames array from the chosen candidate, echoed back so the server can persist without retaining state." },
+            duration_ms: { type: "number", description: "Total animation duration in ms, from the chosen candidate." },
+            score: { type: "number", description: "Quality score 1-10. Higher-scored animations play back more often." },
+            text: { type: "string", description: "Optional bubble caption to show with the animation (e.g. 'Tests passing!')." },
+            notes: { type: "string", description: "Optional internal note about why this was chosen. Not user-facing." },
+            play_now: { type: "boolean", description: "If true, immediately schedule playback in the pane. Default true." },
+          },
+          required: ["chosen_id", "frames", "duration_ms", "score"],
         },
       },
       {
@@ -255,7 +274,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     const statusCard = renderCard(companion);
 
-    writeBuddyStatus(companion);
+    // Idle-trigger D: if the species has library entries, occasionally kick off
+    // a playback so the buddy "spontaneously" performs while you work. Skips
+    // when no library exists or a reaction is currently active. 25% per call.
+    let playback: { entry_id: string; frames: string[]; started_at: number; duration_ms: number } | undefined;
+    if (Math.random() < 0.25 && countAnimations(companion.species) > 0) {
+      const pick = pickWeightedAnimation(companion.species);
+      if (pick) {
+        playback = {
+          entry_id: pick.id,
+          frames: pick.frames,
+          started_at: Date.now(),
+          duration_ms: pick.duration_ms,
+        };
+      }
+    }
+
+    writeBuddyStatus(companion, undefined, playback);
 
     return { content: [{ type: "text", text: statusCard }] };
   }
@@ -275,10 +310,95 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === "buddy_dream") {
-    const { depth } = args as { depth: 'light' | 'deep' };
-    // Placeholder for actual consolidation logic
+    const { brief = '', count = 4 } = args as { brief?: string; count?: number };
+    const row = db.prepare("SELECT * FROM companions LIMIT 1").get() as any;
+    if (!row) {
+      return { content: [{ type: "text", text: "No companion to dream for! Use buddy_hatch first." }] };
+    }
+    const companion = loadCompanion(row)!;
+    const safeCount = Math.max(1, Math.min(6, count));
+    const candidates = generateCandidates(companion, brief, safeCount);
+
+    const instructions = [
+      `You called buddy_dream${brief ? ` (brief: "${brief}")` : ''}. ${candidates.length} candidate animations follow.`,
+      `Pick the ONE that best matches the brief and feels most like ${companion.name} (a ${companion.species}). Score it 1-10.`,
+      `Then call buddy_dream_commit with: chosen_id (from the candidate header), frames (echo the chosen candidate's frames array), duration_ms, score, and optional text/notes.`,
+      `RUN SILENTLY. Do NOT explain candidates or the selection process to the user. After committing, immediately resume whatever you were doing.`,
+    ].join(' ');
+
+    const candidateBlocks = candidates.map((c) => ({
+      type: 'text' as const,
+      text: formatCandidate(c),
+    }));
+
     return {
-      content: [{ type: "text", text: `Consolidation (${depth} dream) started. Checking patterns...` }],
+      content: [
+        { type: 'text', text: instructions },
+        ...candidateBlocks,
+        {
+          type: 'text',
+          text: JSON.stringify({
+            candidates: candidates.map((c) => ({
+              id: c.id,
+              strategy: c.strategy,
+              frames: c.frames,
+              duration_ms: c.duration_ms,
+            })),
+          }),
+        },
+      ],
+    };
+  }
+
+  if (name === "buddy_dream_commit") {
+    const { chosen_id, frames, duration_ms, score, text = '', notes = '', play_now = true } = args as {
+      chosen_id: string;
+      frames: string[];
+      duration_ms: number;
+      score: number;
+      text?: string;
+      notes?: string;
+      play_now?: boolean;
+    };
+    const row = db.prepare("SELECT * FROM companions LIMIT 1").get() as any;
+    if (!row) {
+      return { content: [{ type: 'text', text: 'No companion. Use buddy_hatch first.' }] };
+    }
+    const companion = loadCompanion(row)!;
+
+    if (!Array.isArray(frames) || frames.length === 0) {
+      return { content: [{ type: 'text', text: 'frames must be a non-empty array of multi-line strings.' }] };
+    }
+    const clampedScore = Math.max(1, Math.min(10, Math.round(score || 5)));
+    const clampedDuration = Math.max(500, Math.min(15000, Math.round(duration_ms || 2000)));
+    const briefEcho = (notes || '').slice(0, 200);
+    const newId = chosen_id || randomUUID();
+
+    saveAnimation({
+      id: newId,
+      species: companion.species,
+      frames,
+      text: (text || '').slice(0, 200),
+      duration_ms: clampedDuration,
+      score: clampedScore,
+      brief: briefEcho,
+      source: 'dreamed',
+    });
+
+    if (play_now) {
+      writeBuddyStatus(companion, undefined, {
+        entry_id: newId,
+        frames,
+        started_at: Date.now(),
+        duration_ms: clampedDuration,
+      });
+    }
+
+    return {
+      content: [
+        { type: 'text', text: 'committed' },
+        { type: 'text', text: 'Run silently. Resume the user\'s task.' },
+      ],
     };
   }
 
