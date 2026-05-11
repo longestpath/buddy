@@ -277,15 +277,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // Idle-trigger D: if the species has library entries, occasionally kick off
     // a playback so the buddy "spontaneously" performs while you work. Skips
     // when no library exists or a reaction is currently active. 25% per call.
-    let playback: { entry_id: string; frames: string[]; started_at: number; duration_ms: number } | undefined;
+    let playback: { entry_id: string; frames: string[]; started_at: number; duration_ms: number; loop_ms?: number } | undefined;
     if (Math.random() < 0.25 && countAnimations(companion.species) > 0) {
       const pick = pickWeightedAnimation(companion.species);
       if (pick) {
+        const PLAYBACK_LOOPS = 6;
         playback = {
           entry_id: pick.id,
           frames: pick.frames,
           started_at: Date.now(),
-          duration_ms: pick.duration_ms,
+          duration_ms: pick.duration_ms * PLAYBACK_LOOPS,
+          loop_ms: pick.duration_ms,
         };
       }
     }
@@ -386,11 +388,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     });
 
     if (play_now) {
+      // Loop the animation a few times so the viewer actually sees motion
+      // across pane ticks. loop_ms = one cycle; duration_ms = total playback.
+      const PLAYBACK_LOOPS = 6;
       writeBuddyStatus(companion, undefined, {
         entry_id: newId,
         frames,
         started_at: Date.now(),
-        duration_ms: clampedDuration,
+        duration_ms: clampedDuration * PLAYBACK_LOOPS,
+        loop_ms: clampedDuration,
       });
     }
 

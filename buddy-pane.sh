@@ -5,7 +5,7 @@
 # which every `buddy_*` MCP tool call writes to. No statusline required.
 #
 # Usage:
-#   ./buddy-pane.sh              # default 2s refresh, right-aligned
+#   ./buddy-pane.sh              # default 0.5s refresh, right-aligned
 #   ./buddy-pane.sh 1            # 1s refresh
 #   BUDDY_PANE_TOP=4 ./buddy-pane.sh   # 4 blank rows above the sprite
 #   BUDDY_RIGHT_ALIGN=0 ./buddy-pane.sh  # disable right-align (default: on)
@@ -18,7 +18,7 @@ set -u
 
 REPO="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 WRAPPER="$REPO/dist/statusline-wrapper.js"
-INTERVAL="${1:-2}"
+INTERVAL="${1:-0.5}"
 TOP_PADDING="${BUDDY_PANE_TOP:-2}"
 
 case "$TOP_PADDING" in
@@ -40,8 +40,8 @@ export BUDDY_COMPACT
 
 # Periodic full-clear interval, in ticks. Catches cumulative debris from pane
 # resize (laptop docking) or wide-character overdraw that the per-line \e[K
-# misses. 15 ticks * 2s = ~once every 30s. Set to 0 to disable.
-: "${BUDDY_PANE_CLEAR_EVERY:=15}"
+# misses. 60 ticks * 0.5s = ~once every 30s. Set to 0 to disable.
+: "${BUDDY_PANE_CLEAR_EVERY:=60}"
 case "$BUDDY_PANE_CLEAR_EVERY" in
   ''|*[!0-9]*) echo "buddy-pane: BUDDY_PANE_CLEAR_EVERY must be a non-negative integer" >&2; exit 1 ;;
 esac

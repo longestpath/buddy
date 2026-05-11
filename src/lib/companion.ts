@@ -64,6 +64,7 @@ export type PlaybackState = {
   frames: string[];
   started_at: number;
   duration_ms: number;
+  loop_ms?: number;
 };
 
 export function writeBuddyStatus(

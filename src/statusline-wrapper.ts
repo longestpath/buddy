@@ -121,8 +121,16 @@ try {
       const elapsed = Date.now() - buddy.playback.started_at;
       if (elapsed >= 0 && elapsed < buddy.playback.duration_ms) {
         const frames: string[] = buddy.playback.frames;
-        const frameMs = buddy.playback.duration_ms / frames.length;
-        const idx = Math.min(frames.length - 1, Math.floor(elapsed / frameMs));
+        // loop_ms = one full cycle of the animation. If present and shorter
+        // than duration_ms, the animation loops repeatedly within the
+        // playback window so the viewer actually sees motion across pane
+        // ticks. Absent loop_ms = single-pass (legacy behavior).
+        const loopMs =
+          typeof buddy.playback.loop_ms === 'number' && buddy.playback.loop_ms > 0
+            ? buddy.playback.loop_ms
+            : buddy.playback.duration_ms;
+        const frameMs = loopMs / frames.length;
+        const idx = Math.floor((elapsed % loopMs) / frameMs) % frames.length;
         ascii = frames[idx];
         playbackActive = true;
       }
