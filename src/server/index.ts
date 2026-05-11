@@ -25,7 +25,7 @@ import { join, dirname } from "path";
 import { homedir } from "os";
 import { loadCompanion, writeBuddyStatus, createCompanion } from "../lib/companion.js";
 import { generateCandidates, formatCandidate } from "../lib/dream.js";
-import { saveAnimation, pickWeightedAnimation, countAnimations } from "../lib/animations.js";
+import { saveAnimation, pickWeightedAnimation, countAnimations, getAnimation } from "../lib/animations.js";
 import { renderCard, hatchAnimation } from "../lib/card.js";
 import { BUDDY_STATUS_PATH } from "../lib/constants.js";
 import { runDiagnostics, formatReport } from "../lib/doctor.js";
@@ -144,6 +144,16 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           properties: {
             brief: { type: "string", description: "Optional hint for what the animation should evoke (e.g. 'swim around', 'celebrate', 'sleep')." },
             count: { type: "number", description: "Number of candidates to generate (default 4, max 6)." },
+          },
+        },
+      },
+      {
+        name: "buddy_perform",
+        description: "Make your buddy perform a random animation from its species library right now. Picks score-weighted from previously-dreamed animations. If the library is empty, returns a hint to call buddy_dream first. Pass `id` to play a specific entry. Use when the user asks to see the buddy do something on demand.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            id: { type: "string", description: "Optional: play a specific animation by its id. Omit for a random pick." },
           },
         },
       },
@@ -348,6 +358,46 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             })),
           }),
         },
+      ],
+    };
+  }
+
+  if (name === "buddy_perform") {
+    const { id } = args as { id?: string };
+    const row = db.prepare("SELECT * FROM companions LIMIT 1").get() as any;
+    if (!row) {
+      return { content: [{ type: 'text', text: 'No companion. Use buddy_hatch first.' }] };
+    }
+    const companion = loadCompanion(row)!;
+    let pick = id ? getAnimation(id) : pickWeightedAnimation(companion.species);
+    if (id && pick && pick.species !== companion.species) {
+      // Cross-species mismatch — refuse rather than render something nonsensical
+      pick = null;
+    }
+    if (!pick) {
+      const empty = countAnimations(companion.species) === 0;
+      return {
+        content: [
+          {
+            type: 'text',
+            text: empty
+              ? `${companion.name}'s library is empty. Call buddy_dream first to populate it.`
+              : `No animation found${id ? ` with id ${id}` : ''}.`,
+          },
+        ],
+      };
+    }
+    const PLAYBACK_LOOPS = 6;
+    writeBuddyStatus(companion, undefined, {
+      entry_id: pick.id,
+      frames: pick.frames,
+      started_at: Date.now(),
+      duration_ms: pick.duration_ms * PLAYBACK_LOOPS,
+      loop_ms: pick.duration_ms,
+    });
+    return {
+      content: [
+        { type: 'text', text: `${companion.name} performs: ${pick.brief || pick.id} (${pick.frames.length} frames, ${pick.duration_ms * PLAYBACK_LOOPS}ms total)` },
       ],
     };
   }
