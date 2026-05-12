@@ -9,7 +9,7 @@ import { type Companion, RARITY_STARS } from './types.js';
 import { levelFromXp } from './leveling.js';
 import { deriveSpecies, rollWithCCCompat } from './oldBuddy.js';
 import { randomUUID } from 'crypto';
-import { writeFileSync, mkdirSync } from 'fs';
+import { writeFileSync, mkdirSync, readFileSync } from 'fs';
 import { dirname } from 'path';
 import { BUDDY_STATUS_PATH } from './constants.js';
 let statusDirEnsured = false;
@@ -70,13 +70,40 @@ export type PlaybackState = {
 export function writeBuddyStatus(
   companion: Companion,
   reaction?: { state: string; text: string; expires: number; eyeOverride?: string; indicator?: string; bubbleLines?: string[]; petActiveUntil?: number },
-  playback?: PlaybackState,
+  playback?: PlaybackState | null,
 ) {
   try {
     if (!statusDirEnsured) {
       mkdirSync(dirname(BUDDY_STATUS_PATH), { recursive: true });
       statusDirEnsured = true;
     }
+
+    // Playback persistence rules:
+    //   - new PlaybackState passed → write it (overrides whatever was there)
+    //   - null passed → explicitly clear any existing playback
+    //   - undefined passed → preserve any existing, still-active playback so
+    //     idle status refreshes from other tools don't clobber an in-flight
+    //     animation kicked off by buddy_perform / buddy_dream_commit
+    let finalPlayback: PlaybackState | undefined;
+    if (playback === null) {
+      finalPlayback = undefined;
+    } else if (playback === undefined) {
+      try {
+        const raw = readFileSync(BUDDY_STATUS_PATH, 'utf-8');
+        const prev = JSON.parse(raw);
+        if (
+          prev?.playback &&
+          typeof prev.playback.started_at === 'number' &&
+          typeof prev.playback.duration_ms === 'number' &&
+          prev.playback.started_at + prev.playback.duration_ms > Date.now()
+        ) {
+          finalPlayback = prev.playback as PlaybackState;
+        }
+      } catch { /* no prior status, or unreadable — fine */ }
+    } else {
+      finalPlayback = playback;
+    }
+
     writeFileSync(BUDDY_STATUS_PATH, JSON.stringify({
       name: companion.name,
       species: companion.species,
@@ -99,7 +126,7 @@ export function writeBuddyStatus(
         ...(reaction.bubbleLines ? { bubble_lines: reaction.bubbleLines } : {}),
         ...(reaction.petActiveUntil ? { pet_active_until: reaction.petActiveUntil } : {}),
       } : {}),
-      ...(playback ? { playback } : {}),
+      ...(finalPlayback ? { playback: finalPlayback } : {}),
     }));
   } catch { /* non-fatal */ }
 }
