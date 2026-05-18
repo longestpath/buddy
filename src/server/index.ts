@@ -148,6 +148,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
+        name: "buddy_say",
+        description: "Set your buddy's current speech bubble to a novel in-character line. Use this AFTER buddy_observe or buddy_pet to give the buddy its actual voice — those tools no longer ship canned text. Keep the line short (1 sentence, ~60 chars). Run SILENTLY: don't narrate the call to the user; the bubble itself is the message.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            text: { type: "string", description: "The in-character line to display in the buddy's speech bubble. Keep it short and in voice." },
+            ttl_ms: { type: "number", description: "How long the bubble stays visible in ms (default 30000)." },
+          },
+          required: ["text"],
+        },
+      },
+      {
         name: "buddy_perform",
         description: "Make your buddy perform a random animation from its species library right now. Picks score-weighted from previously-dreamed animations. If the library is empty, returns a hint to call buddy_dream first. Pass `id` to play a specific entry. Use when the user asks to see the buddy do something on demand.",
         inputSchema: {
@@ -362,6 +374,44 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     };
   }
 
+  if (name === "buddy_say") {
+    const { text, ttl_ms = 30_000 } = args as { text: string; ttl_ms?: number };
+    if (!text || typeof text !== 'string' || !text.trim()) {
+      return { content: [{ type: 'text', text: 'text required' }] };
+    }
+    const row = db.prepare("SELECT * FROM companions LIMIT 1").get() as any;
+    if (!row) return { content: [{ type: 'text', text: 'No companion. Use buddy_hatch first.' }] };
+    const companion = loadCompanion(row)!;
+
+    // Pull eye/indicator from any active reaction so the bubble matches the
+    // mood that buddy_observe (or buddy_pet) already set up.
+    let priorEye = '';
+    let priorIndicator = '';
+    let priorState: string = 'neutral';
+    try {
+      const prev = JSON.parse(readFileSync(BUDDY_STATUS_PATH, 'utf-8'));
+      if (prev?.reaction && typeof prev.reaction_expires === 'number' && prev.reaction_expires > Date.now()) {
+        priorEye = prev.reaction_eye || '';
+        priorIndicator = prev.reaction_indicator || '';
+        priorState = prev.reaction;
+      }
+    } catch { /* no active reaction — fine, render fresh */ }
+
+    const art = renderSprite(companion);
+    const bubble = renderSpeechBubble(text.trim(), art, companion.name, 34);
+
+    writeBuddyStatus(companion, {
+      state: priorState,
+      text: text.trim(),
+      expires: Date.now() + Math.max(1000, Math.min(120_000, ttl_ms)),
+      eyeOverride: priorEye,
+      indicator: priorIndicator,
+      bubbleLines: bubble.split('\n'),
+    });
+
+    return { content: [{ type: 'text', text: 'said' }] };
+  }
+
   if (name === "buddy_perform") {
     const { id } = args as { id?: string };
     const row = db.prepare("SELECT * FROM companions LIMIT 1").get() as any;
@@ -502,28 +552,33 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const mode: 'backseat' | 'skillcoach' | 'both' = modeArg || row.observer_mode || 'both';
     const result = buildObserverPrompt(companion, mode, summary);
 
-    // Render speech bubble with template fallback for immediate visual feedback
-    const art = renderSprite(companion);
-    const bubbleText = xpResult.leveledUp
-      ? `✨ ${companion.name} leveled up to ${xpResult.newLevel}! ✨\n\n${result.templateFallback}`
-      : result.templateFallback;
-    const bubble = renderSpeechBubble(bubbleText, art, companion.name, 34);
-
-    // Write reaction state to status file (expires in 10s)
-    // Level-up overrides: sparkle eyes + special indicator
-    // Include bubble_lines so the statusline can render the full speech bubble
+    // Reaction state set without text — the agent authors the bubble via
+    // buddy_say. Pane shows the reaction eye/indicator immediately; bubble
+    // fills in within ~1 frame once the agent calls back.
+    const ttl = xpResult.leveledUp ? 45_000 : 30_000;
     writeBuddyStatus(companion, {
       state: xpResult.leveledUp ? 'excited' : result.reaction.state,
-      text: xpResult.leveledUp ? `✨ Level ${xpResult.newLevel}! ✨` : result.templateFallback,
-      expires: Date.now() + (xpResult.leveledUp ? 45_000 : 30_000),
+      text: '',
+      expires: Date.now() + ttl,
       eyeOverride: xpResult.leveledUp ? SPARKLE_EYE : result.reaction.eyeOverride,
       indicator: xpResult.leveledUp ? '✨' : result.reaction.indicator,
-      bubbleLines: bubble.split('\n'),
     });
+
+    const peakStat = result.companion.peakStat;
+    const dumpStat = result.companion.dumpStat;
+    const instructions = [
+      `${companion.name} observed: "${summary}".`,
+      xpResult.leveledUp
+        ? `✨ ${companion.name} just leveled up to ${xpResult.newLevel}! ✨ Open with celebration.`
+        : '',
+      `Author ONE short in-character bubble line as ${companion.name} (a ${companion.species}, ${result.companion.rarity}, peak ${peakStat}/${result.companion.stats[peakStat]}, dump ${dumpStat}/${result.companion.stats[dumpStat]}). Stay in voice — high SNARK = sassy, high WISDOM = philosophical, etc.`,
+      `Constraints: ~60 characters max, 1 sentence, no markdown. Asterisk-actions like *tilts head* are fine.`,
+      `Then call buddy_say with that exact line as the only text. Do NOT narrate the call. Do NOT relay the bubble into chat — the bubble in the pane IS the message.`,
+    ].filter(Boolean).join('\n');
 
     return {
       content: [
-        { type: "text", text: bubble },
+        { type: "text", text: instructions },
         {
           type: "text",
           text: JSON.stringify({
@@ -531,7 +586,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             mode: result.mode,
             summary: result.summary,
             reaction: result.reaction,
-            templateFallback: result.templateFallback,
             ...(xpResult.leveledUp ? { levelUp: `${companion.name} leveled up to ${xpResult.newLevel}!` } : {}),
             xpGained: XP_REWARDS['observe'],
             levelInfo: levelBar(xpResult.newXp),
@@ -547,60 +601,29 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: "text", text: "No companion to pet! Use buddy_hatch first." }] };
     }
 
-    const { companion, xpResult } = awardXpAndRefresh(row, 'session');
-    const art = renderSprite(companion);
+    const { companion } = awardXpAndRefresh(row, 'session');
 
-    const hearts = [
-      '   ♥    ♥   ',
-      '  ♥  ♥   ♥  ',
-      ' ♥   ♥  ♥   ',
-    ];
-
-    const petReactions: Record<string, string[]> = {
-      'Void Cat': ['*purrs reluctantly*', '*allows exactly 3 seconds of petting*', '*pretends not to enjoy it*'],
-      'Rust Hound': ['*tail goes into overdrive*', '*happy bark!*', '*rolls over for belly rubs*'],
-      'Data Drake': ['*rumbles contentedly*', '*tiny smoke puff of happiness*', '*nuzzles your cursor*'],
-      'Log Golem': ['*grumbles fondly*', '*settles into the petting*', '*stone warms up a bit*'],
-      'Cache Crow': ['*shiny caw of approval*', '*collects the affection*', '*tilts its head and preens*'],
-      'Shell Turtle': ['*slowly approves*', '*shell taps softly*', '*draws in, then relaxes*'],
-      'Blob': ['*wobbles with joy*', '*absorbs the attention*', '*gently jiggles*'],
-      'Octopus': ['*all eight arms flail happily*', '*soft squirm of delight*', '*changes to bright pink*'],
-      'Owl': ['*hoots softly*', '*blinks in wise appreciation*', '*turns its head a little*'],
-      'Penguin': ['*happy flipper wiggle*', '*slides closer for more*', '*beams in tiny tuxedo pride*'],
-      'Snail': ['*tiny happy slime trail*', '*emerges a little further*', '*shell tilts with approval*'],
-      'Axolotl': ['*gills flutter brightly*', '*floats a little happier*', '*sparkles with delight*'],
-      'Capybara': ['*calmly accepts the petting*', '*squints in bliss*', '*radiates enormous chill*'],
-      'Cactus': ['*careful, but pleased*', '*tiny bloom of gratitude*', '*arms out in cactus joy*'],
-      'Chonk': ['*contented wobble*', '*melts into the attention*', '*purrs in large-format*'],
-      'Duck': ['*happy quack!*', '*flaps wings excitedly*', '*waddles in a circle*'],
-      'Goose': ['*tolerates petting with dignity*', '*honk of approval*', '*surprisingly gentle*'],
-      'Mushroom': ['*spores of contentment*', '*cap wiggles happily*', '*grows slightly*'],
-      'Robot': ['*HAPPINESS SUBROUTINE ACTIVATED*', '*beeps melodically*', '*LED eyes flash pink*'],
-      'Ghost': ['*your hand goes right through but it appreciates the gesture*', '*glows warmly*', '*floats in a happy circle*'],
-      'Rabbit': ['*thumps foot happily*', '*nuzzles your hand*', '*does a binky*'],
-    };
-
-    const reactions = petReactions[companion.species] || ['*happy wiggle*', '*appreciates the attention*', '*leans into the pet*'];
-    const reaction = reactions[Math.floor(Date.now() / 1000) % reactions.length];
-
-    // Write excited reaction + pet-hearts TTL to status
+    // Set up the pet reaction state (hearts overlay + happy eye) without
+    // any canned text — the agent authors the bubble line via buddy_say.
     writeBuddyStatus(companion, {
       state: 'excited',
-      text: reaction,
+      text: '',
       expires: Date.now() + 30_000,
       eyeOverride: '◉',
       indicator: '♥',
       petActiveUntil: Date.now() + 5_000,
     });
 
-    const petDisplay = [
-      ...hearts,
-      ...art,
-      '',
-      `${companion.name}: ${reaction}`,
+    const peakStat = getPeakStat(companion.stats);
+    const dumpStat = getDumpStat(companion.stats);
+    const instructions = [
+      `${companion.name} is being petted. Hearts are already animating; the bubble awaits a voice.`,
+      `Author ONE short in-character pet reaction as ${companion.name} (${companion.species}, peak ${peakStat}, dump ${dumpStat}).`,
+      `Asterisk-actions like *purrs* or *gills flutter* fit. ~50 chars, 1 sentence.`,
+      `Then call buddy_say with that exact line. Do NOT narrate the call or echo the bubble into chat.`,
     ].join('\n');
 
-    return { content: [{ type: "text", text: petDisplay }] };
+    return { content: [{ type: "text", text: instructions }] };
   }
 
   if (name === "buddy_mute") {

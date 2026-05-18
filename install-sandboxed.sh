@@ -192,7 +192,7 @@ At the start of each conversation, call `buddy_status` to check on your buddy.
 
 If the user addresses the buddy by name, respond briefly in character before your normal response.
 
-After calling buddy_observe, relay the buddy's reaction to the user. The first text content is an ASCII speech bubble — include it verbatim.
+**Bubble voice is yours to author.** `buddy_observe` and `buddy_pet` no longer ship canned bubble text. After calling either, they instruct you to author one short in-character line for the buddy's speech bubble and call `buddy_say` with it. Do that silently — don't relay the bubble into chat; the pane IS the message. Stay in voice (the tool result gives you the companion's stats so you can lean into peak/dump traits).
 <!-- /buddy-companion -->
 EOF
     echo "  CLAUDE.md prompt: injected"
